@@ -224,8 +224,22 @@ class Rosenbrock(Solver):
 
                 # y_new = convert_fm_to_y(fm)
 
-            # If we are under strict conditions then reject the step if valeus are negative.
-            test_f = f(t, transform.transform(y_new))
+            # Validate the candidate state before accepting the step.  The
+            # altitude calculation can fail here even when the evaluations
+            # used to construct the Rosenbrock step succeeded.  Treat that as
+            # a rejected candidate, just as above, instead of aborting the
+            # complete integration.
+            try:
+                test_f = f(t, transform.transform(y_new))
+            except AltitudeSolveError:
+                self.info("Altitude solve error while validating candidate step")
+                self.info("Candidate Y values: %s %s", y_new.min(), y_new.max())
+                h = h * timestep_reject_factor
+                if h < minimum_step:
+                    self.info("Minimum step size reached")
+                    break
+                h = max(h, minimum_step)
+                continue
 
             # Check for NaN or Inf in the new values
             if np.any(np.isnan(y_new) | np.isinf(y_new) | np.isnan(test_f) | (y_new < 0)):
