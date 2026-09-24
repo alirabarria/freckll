@@ -10,6 +10,7 @@ Fast Disequilibrium chemistry
 
 - **Github repository**: <https://github.com/ahmed-f-alrefaie/freckll/>
 - **Documentation** <https://ahmed-f-alrefaie.github.io/freckll/>
+- **Changes maintained in this fork**: [FORK_CHANGES.md](FORK_CHANGES.md)
 
 ## Test case
 
