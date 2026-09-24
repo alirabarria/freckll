@@ -305,8 +305,17 @@ class Rosenbrock(Solver):
         extra = {}
 
         if not success:
-            extra["dndt"] = f(t, y)
-            extra["jac"] = jac(t, y)
+            # ``y`` is kept in physical state space inside this integration
+            # loop. The dndt and Jacobian callables operate in the selected
+            # transformed space and invert that transform internally, just as
+            # they do during accepted-step validation. Passing physical ``y``
+            # directly here applies the inverse transform twice (notably
+            # ``exp(y)`` for LogTransform) and can turn a normal unsuccessful
+            # solve into overflow or an AltitudeSolveError while diagnostics
+            # are being assembled.
+            diagnostic_y = transform.transform(y)
+            extra["dndt"] = f(t, diagnostic_y)
+            extra["jac"] = jac(t, diagnostic_y)
 
         return {
             "num_dndt_evals": f_eval,
