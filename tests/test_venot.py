@@ -122,6 +122,33 @@ for line in TEST_DATA.split("\n"):
     expected.append((species, mass, int(num_c), int(num_h), int(num_o), int(num_n)))
 
 
+def test_load_reactions_sorts_input_files(monkeypatch, tmp_path):
+    """Reaction call order must not depend on filesystem iteration order."""
+    from pathlib import Path
+
+    from freckll.venot import io
+
+    first = tmp_path / "a_reactions.dat"
+    second = tmp_path / "b_reactions.dat"
+    first.touch()
+    second.touch()
+
+    monkeypatch.setattr(
+        Path,
+        "glob",
+        lambda self, pattern: iter([second, first]),
+    )
+    monkeypatch.setattr(
+        io,
+        "_construct_reaction_call",
+        lambda composition, path, efficiency_indices, decode_species, ignore_files: [path.name],
+    )
+
+    reaction_calls = io.load_reactions([], tmp_path, np.array([], dtype=int))
+
+    assert reaction_calls == ["a_reactions.dat", "b_reactions.dat"]
+
+
 @pytest.mark.parametrize("species, expected_mass, num_c, num_h, num_o, num_n", expected)
 def test_decode_species_num_atoms(species, expected_mass, num_c, num_h, num_o, num_n):
     """Test that the number of atoms in a species is decoded correctly."""

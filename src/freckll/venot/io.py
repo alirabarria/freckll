@@ -574,7 +574,10 @@ def load_reactions(
     directory = pathlib.Path(directory)
 
     # Glob .dat files
-    reaction_files = directory.glob("*.dat")
+    # Directory iteration order varies across filesystems.  Keep the reaction
+    # call order stable so a seeded perturbation is assigned to the same
+    # reaction on every platform.
+    reaction_files = sorted(directory.glob("*.dat"))
 
     # Reaction and its type is based on the file name
     reaction_calls = []
@@ -603,7 +606,7 @@ def infer_composition(
     directory = pathlib.Path(directory)
 
     # Glob .dat files
-    reaction_files = directory.glob("*.dat")
+    reaction_files = sorted(directory.glob("*.dat"))
 
     composition: set[SpeciesFormula] = set()
 
@@ -621,4 +624,4 @@ def infer_composition(
         products = [item for sublist in products for item in sublist]
         composition |= set(reactants) | set(products)
 
-    return list(composition)
+    return sorted(composition, key=str)
