@@ -119,6 +119,76 @@ New campaigns should record at least:
 - the reaction-network identity or checksums; and
 - the generated per-run perturbation table.
 
+## 3. Evaluate unsuccessful-solve diagnostics in transformed space
+
+**Commit:** `aafb41f` (`Evaluate failed-solve diagnostics in transformed space`)
+
+### Problem
+
+The Rosenbrock integration loop keeps its accepted state `y` in physical
+abundance space. A candidate is produced in transformed coordinates and then
+returned to physical coordinates before it is accepted:
+
+```python
+y_new = transform.inverse_transform(y_new)
+y = np.copy(y_new)
+```
+
+The derivative and Jacobian callables, however, expect their input in the
+selected transformed space because both invert that transform internally.
+Most calls in the integration loop correctly use a transformed state, for
+example:
+
+```python
+test_f = f(t, transform.transform(y_new))
+```
+
+When an integration ended unsuccessfully, FRECKLL assembled additional
+diagnostics with the physical state directly:
+
+```python
+extra["dndt"] = f(t, y)
+extra["jac"] = jac(t, y)
+```
+
+For `LogTransform`, this made `f` and `jac` interpret physical abundances as
+log-abundances and apply `exp(y)` to them. This is not a pending transform from
+the preceding step: `y` is already the physical state. The mismatch could
+produce overflow, non-finite chemistry, or an `AltitudeSolveError` while
+reporting an otherwise ordinary unsuccessful termination such as `maxiter`.
+The secondary exception could therefore hide the actual reason the solver
+stopped.
+
+### Change
+
+Failure diagnostics now receive the same transformed representation used by
+the rest of the solver:
+
+```python
+diagnostic_y = transform.transform(y)
+extra["dndt"] = f(t, diagnostic_y)
+extra["jac"] = jac(t, diagnostic_y)
+```
+
+This change does not modify accepted steps, timestep selection, convergence
+criteria, or successful integrations. It only corrects diagnostic evaluation
+after `success=False`.
+
+### Test
+
+`tests/test_rosenbrock.py::test_failed_log_solve_evaluates_diagnostics_in_transformed_space`
+forces a deterministic `LogTransform` integration to terminate at `maxiter`.
+It verifies that both final diagnostic callables receive `log(y)`, rather than
+the already physical `y`.
+
+### Scientific and campaign implications
+
+Successful historical runs are numerically unaffected. Some historical runs
+reported as worker exceptions may instead have completed the integration loop
+with `success=False` and then crashed only while assembling failure
+diagnostics. Those runs should not be reclassified as converged, but the patch
+allows their genuine termination state and diagnostic arrays to be retained.
+
 ## Reproducibility policy for future changes
 
 Future modifications should be added here with:
