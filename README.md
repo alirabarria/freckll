@@ -15,6 +15,13 @@ Fast Disequilibrium chemistry
   including regression tests and implications for existing campaigns and pull
   requests.
 
+This fork restores rejection of Rosenbrock candidates whose embedded local
+error exceeds `rtol`, bounds each multiplicative timestep change, and prevents
+an exactly zero error estimate from producing an infinite timestep. The
+detailed changelog explains the numerical scope and limitations of this
+control-flow correction; it does not redefine FRECKLL's `atol`/`rtol` metric
+or claim to fix inaccurate chemistry derivatives and Jacobians.
+
 ## Test case
 
 ```bash

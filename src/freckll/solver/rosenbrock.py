@@ -12,17 +12,43 @@ from .solver import DyCallable, JacCallable, Solver, SolverOutput, convergence_t
 from .transform import Transform, UnityTransform
 
 
-def update_timestep(timestep: float, rtol: float, error: float):
+def update_timestep(
+    timestep: float,
+    rtol: float,
+    error: float,
+    min_factor: float = 0.5,
+    max_factor: float = 2.0,
+    zero_error_fraction: float = 0.01,
+):
     """Updates the timestep based on the error and the desired tolerance.
 
     Args:
         timestep (float): The current timestep.
         rtol (float): The relative tolerance.
         error (float): The estimated error.
+        min_factor (float): Minimum multiplicative timestep change.
+        max_factor (float): Maximum multiplicative timestep change.
+        zero_error_fraction (float): Fraction of ``rtol`` used when the
+            estimated error is exactly zero. This avoids an infinite next
+            timestep while preserving the maximum-growth limit.
 
 
     """
-    return 0.9 * timestep * (rtol / error) ** 0.5
+    if timestep <= 0:
+        raise ValueError("timestep must be positive")
+    if rtol <= 0:
+        raise ValueError("rtol must be positive")
+    if error < 0 or not np.isfinite(error):
+        raise ValueError("error must be finite and non-negative")
+    if min_factor <= 0 or max_factor < min_factor:
+        raise ValueError("timestep factors must satisfy 0 < min_factor <= max_factor")
+    if zero_error_fraction <= 0:
+        raise ValueError("zero_error_fraction must be positive")
+
+    effective_error = error if error > 0 else zero_error_fraction * rtol
+    factor = 0.9 * (rtol / effective_error) ** 0.5
+    factor = np.clip(factor, min_factor, max_factor)
+    return timestep * factor
 
 
 def step_second_order_rosenbrock(f: DyCallable, jac: JacCallable, y: FreckllArray, t: float, h: float) -> FreckllArray:
@@ -116,6 +142,9 @@ class Rosenbrock(Solver):
         dfdt_criteria: float = 1e-8,
         initial_step: float = 1e-13,
         timestep_reject_factor: float = 0.1,
+        timestep_min_factor: float = 0.5,
+        timestep_max_factor: float = 2.0,
+        zero_delta_fraction: float = 0.01,
         minimum_step: float = 1e-16,
         tiny: float = 1e-50,
         nevals: int = 200,
@@ -140,6 +169,12 @@ class Rosenbrock(Solver):
             dfdt_criteria: The criteria for convergence.
             initial_step: The initial step size.
             timestep_reject_factor: The factor to reduce the timestep by on rejection.
+            timestep_min_factor: Minimum factor applied by the local-error
+                timestep controller.
+            timestep_max_factor: Maximum factor applied by the local-error
+                timestep controller.
+            zero_delta_fraction: Fraction of ``rtol`` substituted for an
+                exactly zero error estimate when computing the next step.
             minimum_step: The minimum step size.
             tiny: A small value to avoid division by zero.
             neval: The number of time evaluations to store.
@@ -336,19 +371,58 @@ class Rosenbrock(Solver):
                 ys.append(y)
                 break
 
-            # Accept the step
+            # Estimate the local error before accepting the candidate. Values
+            # below atol do not participate in FRECKLL's existing scalar
+            # error metric. The metric itself is intentionally unchanged; for
+            # LogTransform it remains a difference in log-abundance space.
+            error[y_new < atol] = 0
+            error[y_new < 0] = 0
+            delta = np.amax(error[y_new > 0])
+
+            next_h = update_timestep(
+                h,
+                rtol,
+                delta,
+                min_factor=timestep_min_factor,
+                max_factor=timestep_max_factor,
+                zero_error_fraction=zero_delta_fraction,
+            )
+
+            # The embedded first-/second-order discrepancy is an acceptance
+            # criterion, not merely advice for the following step. Retain the
+            # last accepted state and retry when the candidate exceeds rtol.
+            if delta > rtol:
+                if trace_attempts:
+                    self.info(
+                        "Rosenbrock rejected: reason=local_error "
+                        "iteration=%d t=%.17E h=%.17E delta=%.17E "
+                        "rtol=%.17E h_next=%.17E candidate_min=%.17E "
+                        "candidate_max=%.17E error_max=%.17E",
+                        iterations,
+                        t,
+                        h,
+                        delta,
+                        rtol,
+                        next_h,
+                        np.nanmin(y_new),
+                        np.nanmax(y_new),
+                        np.nanmax(error),
+                    )
+                h = next_h
+                if h < minimum_step:
+                    self.info("Minimum step size reached")
+                    break
+                h = max(h, minimum_step)
+                continue
+
+            # Accept the step only after candidate-state and local-error
+            # validation have both succeeded.
             track_y.append(y_new)
             y = np.copy(y_new)
 
             t += h
             track_t.append(t)
 
-            # Determine the new timestep
-            error[y_new < atol] = 0
-            error[y_new < 0] = 0
-            delta = np.amax(error[y_new > 0])
-
-            next_h = update_timestep(h, rtol, delta)
             if trace_attempts:
                 self.info(
                     "Rosenbrock accepted: iteration=%d t=%.17E h=%.17E "

@@ -3,7 +3,7 @@ import logging
 import numpy as np
 
 from freckll.kinetics import AltitudeSolveError
-from freckll.solver.rosenbrock import Rosenbrock
+from freckll.solver.rosenbrock import Rosenbrock, update_timestep
 from freckll.solver.transform import LogTransform, UnityTransform
 
 
@@ -13,7 +13,7 @@ def test_altitude_error_during_candidate_validation_rejects_step(monkeypatch, ca
 
     def fake_step(f, jac, y, t, h):
         attempted_steps.append(h)
-        return y + 0.1, np.full_like(y, 0.01)
+        return y + 0.1, np.full_like(y, 1e-4)
 
     monkeypatch.setattr(
         "freckll.solver.rosenbrock.step_second_order_rosenbrock",
@@ -77,7 +77,7 @@ def test_failed_log_solve_evaluates_diagnostics_in_transformed_space(monkeypatch
     jac_inputs = []
 
     def fake_step(f, jac, y, t, h):
-        return y.copy(), np.full_like(y, 0.01)
+        return y.copy(), np.full_like(y, 1e-4)
 
     monkeypatch.setattr(
         "freckll.solver.rosenbrock.step_second_order_rosenbrock",
@@ -113,3 +113,54 @@ def test_failed_log_solve_evaluates_diagnostics_in_transformed_space(monkeypatch
     np.testing.assert_allclose(f_inputs[-1], transformed_y)
     assert len(jac_inputs) == 1
     np.testing.assert_allclose(jac_inputs[-1], transformed_y)
+
+
+def test_update_timestep_bounds_growth_and_reduction():
+    """The controller must remain finite and bound each multiplicative change."""
+    assert update_timestep(1.0, 1e-3, 0.0) == 2.0
+    assert update_timestep(1.0, 1e-3, 1e3) == 0.5
+
+
+def test_local_error_rejects_candidate_before_advancing(monkeypatch, caplog):
+    """A candidate with delta above rtol must be retried at the same time."""
+    attempted_steps = []
+    attempted_times = []
+    errors = iter((1e-2, 1e-4))
+
+    def fake_step(f, jac, y, t, h):
+        attempted_steps.append(h)
+        attempted_times.append(t)
+        return y + 0.1, np.full_like(y, next(errors))
+
+    monkeypatch.setattr(
+        "freckll.solver.rosenbrock.step_second_order_rosenbrock",
+        fake_step,
+    )
+
+    solver = Rosenbrock.__new__(Rosenbrock)
+    solver._logger = logging.getLogger("freckll.test_rosenbrock")
+
+    with caplog.at_level(logging.INFO):
+        result = solver._run_solver(
+            f=lambda t, y: np.zeros_like(y),
+            jac=lambda t, y: np.eye(y.size),
+            y0=np.array([1.0]),
+            t0=0.0,
+            t1=0.05,
+            num_species=1,
+            transform=UnityTransform(),
+            initial_step=0.1,
+            rtol=1e-3,
+            maxiter=3,
+            trace_attempts=True,
+        )
+
+    assert result["success"] is True
+    assert attempted_steps == [0.1, 0.05]
+    assert attempted_times == [0.0, 0.0]
+    assert result["times"][-1] == 0.05
+    assert any(
+        "reason=local_error" in record.getMessage()
+        and "delta=1.00000000000000002E-02" in record.getMessage()
+        for record in caplog.records
+    )

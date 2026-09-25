@@ -229,6 +229,91 @@ The candidate-altitude regression test now enables tracing and verifies that
 the rejected initial attempt and accepted retry are both recorded with their
 respective timesteps and rejection reason.
 
+## 5. Restore local-error rejection and bound Rosenbrock timestep changes
+
+**Commit:** `Restore Rosenbrock local-error rejection` (development change on
+`codex/rosenbrock-step-recovery`).
+
+### Problem
+
+FRECKLL's Rosenbrock step returns a second-order candidate together with an
+embedded error estimate: the absolute difference between its second-order and
+first-order solutions. The solver reduced that array to the scalar `delta`,
+but did so only after it had already accepted the candidate, copied it into
+the integration state, and advanced the simulation time. Consequently,
+`delta > rtol` could only reduce the *next* timestep; it could not reject the
+inaccurate candidate that produced the large error.
+
+This was visible in a matched W39/Veillet-2024 replay on Geryon. One finite
+candidate had approximately `delta = 26.47` for `rtol = 1e-3` and a maximum
+abundance of `1.19e5`. FRECKLL accepted that state and reduced only the next
+timestep. Once the accepted state had been corrupted, later error estimates
+could become exactly zero and the original controller divided by zero,
+allowing an infinite proposed timestep.
+
+The behavior also differed from VULCAN, on which this Rosenbrock
+implementation is based. VULCAN accepts a step only when its local error is
+within tolerance, rejects and retries otherwise, substitutes a small finite
+error when `delta == 0`, and bounds the multiplicative timestep change.
+
+### Change
+
+FRECKLL now performs the operations in this order:
+
+1. build and physically validate the candidate state;
+2. apply the existing `atol` abundance mask to the embedded error;
+3. compute the existing scalar `delta`;
+4. calculate a bounded candidate for the next timestep;
+5. reject the candidate without changing `y` or `t` when `delta > rtol`; and
+6. accept and advance only when the candidate passes the local-error test.
+
+The default timestep-factor bounds are `0.5` and `2.0`. These are per-step
+ratio limits, not absolute timestep limits: repeated accepted steps can still
+span the many orders of magnitude required by atmospheric chemistry. An
+exactly zero `delta` is treated as `0.01 * rtol` for timestep selection, which
+results in the bounded maximum growth rather than infinity.
+
+With attempt tracing enabled, these retries are logged as
+`reason=local_error`, including `t`, `h`, `delta`, `rtol`, the proposed next
+`h`, and the candidate range.
+
+### What this change deliberately does not alter
+
+This is a control-flow correction, not a redefinition of FRECKLL's error
+model. In particular:
+
+- `atol` still acts as the abundance threshold that excludes species from the
+  scalar error comparison;
+- under `LogTransform`, the embedded error remains a difference in
+  log-abundance coordinates rather than a conventional
+  `ATOL + RTOL * abs(y)` weighted norm;
+- the convergence criteria `df_criteria` and `dfdt_criteria` are unchanged;
+  and
+- this cannot repair an inaccurate derivative or Jacobian caused by
+  catastrophic cancellation. It is intended to prevent an obviously poor
+  embedded Rosenbrock candidate from being accepted after that numerical
+  problem has manifested.
+
+### Tests
+
+`tests/test_rosenbrock.py` now verifies that:
+
+- a candidate with `delta > rtol` is retried at the same simulation time;
+- the rejected candidate never becomes the accepted state;
+- the retry uses the bounded reduction factor;
+- `delta == 0` produces finite growth capped at a factor of two; and
+- a very large error produces a reduction capped at a factor of one half.
+
+### Scientific and campaign implications
+
+This change can alter every Rosenbrock trajectory whose historical run
+accepted at least one candidate with `delta > rtol`, so patched campaigns
+must use a new output directory and record the FRECKLL commit. Comparisons
+against old campaigns are diagnostic comparisons, not bitwise continuations.
+The W39 Monte Carlo campaign should be restarted only after a small matched
+seed replay confirms that the new local-error rejections occur as expected
+and that the solver still reaches the intended physical solution.
+
 ## Reproducibility policy for future changes
 
 Future modifications should be added here with:
