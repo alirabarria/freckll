@@ -7,7 +7,7 @@ from freckll.solver.rosenbrock import Rosenbrock
 from freckll.solver.transform import LogTransform, UnityTransform
 
 
-def test_altitude_error_during_candidate_validation_rejects_step(monkeypatch):
+def test_altitude_error_during_candidate_validation_rejects_step(monkeypatch, caplog):
     """A failed candidate validation should reduce the step and retry."""
     attempted_steps = []
 
@@ -32,24 +32,41 @@ def test_altitude_error_during_candidate_validation_rejects_step(monkeypatch):
     solver = Rosenbrock.__new__(Rosenbrock)
     solver._logger = logging.getLogger("freckll.test_rosenbrock")
 
-    result = solver._run_solver(
-        f=f,
-        jac=lambda t, y: np.eye(y.size),
-        y0=np.array([1.0]),
-        t0=0.0,
-        t1=0.05,
-        num_species=1,
-        transform=UnityTransform(),
-        initial_step=0.5,
-        timestep_reject_factor=0.1,
-        minimum_step=1e-6,
-        maxiter=5,
-    )
+    with caplog.at_level(logging.INFO):
+        result = solver._run_solver(
+            f=f,
+            jac=lambda t, y: np.eye(y.size),
+            y0=np.array([1.0]),
+            t0=0.0,
+            t1=0.05,
+            num_species=1,
+            transform=UnityTransform(),
+            initial_step=0.5,
+            timestep_reject_factor=0.1,
+            minimum_step=1e-6,
+            maxiter=5,
+            trace_attempts=True,
+        )
 
     assert result["success"] is True
     assert validation_calls == 2
     assert attempted_steps == [0.5, 0.05]
     assert result["times"][-1] == 0.05
+    messages = [record.getMessage() for record in caplog.records]
+    assert any(
+        "Rosenbrock attempt:" in message
+        and "h=5.00000000000000000E-01" in message
+        for message in messages
+    )
+    assert any(
+        "reason=altitude_during_candidate_validation" in message
+        for message in messages
+    )
+    assert any(
+        "Rosenbrock accepted:" in message
+        and "h=5.00000000000000028E-02" in message
+        for message in messages
+    )
 
 
 def test_failed_log_solve_evaluates_diagnostics_in_transformed_space(monkeypatch):

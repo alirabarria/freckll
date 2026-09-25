@@ -189,6 +189,46 @@ with `success=False` and then crashed only while assembling failure
 diagnostics. Those runs should not be reclassified as converged, but the patch
 allows their genuine termination state and diagnostic arrays to be retained.
 
+## 4. Optional trace of every Rosenbrock timestep attempt
+
+**Commit:** `Trace every Rosenbrock timestep attempt` (temporary diagnostic
+change on `codex/rosenbrock-step-recovery`).
+
+### Problem
+
+FRECKLL normally logs accepted steps but does not identify every attempted
+timestep or the exact branch that rejected a candidate. Consequently, two
+platforms can show different first accepted timesteps without revealing where
+their numerical trajectories first diverged.
+
+### Change
+
+The Rosenbrock solver accepts an opt-in `trace_attempts` argument. The same
+mode can be enabled without changing a calling application by setting
+`FRECKLL_TRACE_ROSENBROCK_ATTEMPTS=1`. When enabled, it logs each attempted
+`iteration`, `t`, and `h`. It then records whether the candidate was accepted
+or rejected. Rejections distinguish:
+
+- an `AltitudeSolveError` during the Rosenbrock stages;
+- a stage derivative containing `NaN`;
+- an `AltitudeSolveError` during candidate validation; and
+- a candidate with non-finite/negative abundances or a `NaN` validation
+  derivative.
+
+Accepted-step records include the estimated absolute transformed-coordinate
+error `delta`, the next timestep, candidate range, error range, validation
+derivative range, and count of infinite validation derivatives.
+
+Tracing is disabled by default and does not change the solver decision logic.
+It is intended only for matched cross-platform replays because it can produce
+large log files.
+
+### Test
+
+The candidate-altitude regression test now enables tracing and verifies that
+the rejected initial attempt and accepted retry are both recorded with their
+respective timesteps and rejection reason.
+
 ## Reproducibility policy for future changes
 
 Future modifications should be added here with:

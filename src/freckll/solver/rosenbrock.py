@@ -1,3 +1,4 @@
+import os
 import time
 from collections import deque
 from typing import Optional
@@ -121,6 +122,7 @@ class Rosenbrock(Solver):
         strict: bool = False,
         maxiter: Optional[int] = 100,
         max_solve_time: Optional[u.Quantity] = None,
+        trace_attempts: bool = False,
         **kwargs,
     ) -> SolverOutput:
         """Solve the ODE using the Rosenbrock method.
@@ -144,8 +146,19 @@ class Rosenbrock(Solver):
             strict: If True, reject negative values.
             maxiter: The maximum number of iterations.
             max_solve_time: The maximum time to spend solving the ODE.
+            trace_attempts: Log every attempted timestep, including rejected
+                candidates and the reason for rejection. Intended for
+                cross-platform solver diagnostics, not routine production.
         """
         import math
+
+        trace_env = os.environ.get("FRECKLL_TRACE_ROSENBROCK_ATTEMPTS", "")
+        trace_attempts = trace_attempts or trace_env.strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
 
         h = initial_step
         y = np.copy(y0)
@@ -180,6 +193,13 @@ class Rosenbrock(Solver):
             jac_eval += 1
             iterations += 1
             current_time = time.time() - start_time
+            if trace_attempts:
+                self.info(
+                    "Rosenbrock attempt: iteration=%d t=%.17E h=%.17E",
+                    iterations,
+                    t,
+                    h,
+                )
             # Break if the maximum number of iterations is reached
             if maxiter and iterations > maxiter:
                 ys.append(y)
@@ -200,14 +220,37 @@ class Rosenbrock(Solver):
                 # If we get an altitude solve error, we need to reject the step
                 self.info("Altitude solve error")
                 self.info("Y values: %s %s", y.min(), y.max())
-                h = h * timestep_reject_factor
+                next_h = h * timestep_reject_factor
+                if trace_attempts:
+                    self.info(
+                        "Rosenbrock rejected: reason=altitude_during_stages "
+                        "iteration=%d t=%.17E h=%.17E h_next=%.17E "
+                        "y_min=%.17E y_max=%.17E",
+                        iterations,
+                        t,
+                        h,
+                        next_h,
+                        np.nanmin(y),
+                        np.nanmax(y),
+                    )
+                h = next_h
                 continue
 
             # Reject
 
             # Reject the step if the result is None (due to NaN or Inf)
             if result is None:
-                h = h * timestep_reject_factor
+                next_h = h * timestep_reject_factor
+                if trace_attempts:
+                    self.info(
+                        "Rosenbrock rejected: reason=nan_in_stage_derivative "
+                        "iteration=%d t=%.17E h=%.17E h_next=%.17E",
+                        iterations,
+                        t,
+                        h,
+                        next_h,
+                    )
+                h = next_h
                 continue
 
             # Check if the step is valid
@@ -234,7 +277,24 @@ class Rosenbrock(Solver):
             except AltitudeSolveError:
                 self.info("Altitude solve error while validating candidate step")
                 self.info("Candidate Y values: %s %s", y_new.min(), y_new.max())
-                h = h * timestep_reject_factor
+                next_h = h * timestep_reject_factor
+                if trace_attempts:
+                    self.info(
+                        "Rosenbrock rejected: reason=altitude_during_candidate_validation "
+                        "iteration=%d t=%.17E h=%.17E h_next=%.17E "
+                        "candidate_min=%.17E candidate_max=%.17E "
+                        "candidate_nan=%d candidate_inf=%d candidate_negative=%d",
+                        iterations,
+                        t,
+                        h,
+                        next_h,
+                        np.nanmin(y_new),
+                        np.nanmax(y_new),
+                        np.count_nonzero(np.isnan(y_new)),
+                        np.count_nonzero(np.isinf(y_new)),
+                        np.count_nonzero(y_new < 0),
+                    )
+                h = next_h
                 if h < minimum_step:
                     self.info("Minimum step size reached")
                     break
@@ -245,7 +305,24 @@ class Rosenbrock(Solver):
             if np.any(np.isnan(y_new) | np.isinf(y_new) | np.isnan(test_f) | (y_new < 0)):
                 self.info("Reducing step size")
                 # Reject the step and reduce the timestep
-                h = h * timestep_reject_factor
+                next_h = h * timestep_reject_factor
+                if trace_attempts:
+                    self.info(
+                        "Rosenbrock rejected: reason=invalid_candidate "
+                        "iteration=%d t=%.17E h=%.17E h_next=%.17E "
+                        "candidate_nan=%d candidate_inf=%d candidate_negative=%d "
+                        "test_f_nan=%d test_f_inf=%d",
+                        iterations,
+                        t,
+                        h,
+                        next_h,
+                        np.count_nonzero(np.isnan(y_new)),
+                        np.count_nonzero(np.isinf(y_new)),
+                        np.count_nonzero(y_new < 0),
+                        np.count_nonzero(np.isnan(test_f)),
+                        np.count_nonzero(np.isinf(test_f)),
+                    )
+                h = next_h
                 # If the new step is too small,
                 if h < minimum_step:
                     self.info("Minimum step size reached")
@@ -271,7 +348,26 @@ class Rosenbrock(Solver):
             error[y_new < 0] = 0
             delta = np.amax(error[y_new > 0])
 
-            h = update_timestep(h, rtol, delta)
+            next_h = update_timestep(h, rtol, delta)
+            if trace_attempts:
+                self.info(
+                    "Rosenbrock accepted: iteration=%d t=%.17E h=%.17E "
+                    "delta=%.17E h_next=%.17E candidate_min=%.17E "
+                    "candidate_max=%.17E error_max=%.17E test_f_min=%.17E "
+                    "test_f_max=%.17E test_f_inf=%d",
+                    iterations,
+                    t,
+                    h,
+                    delta,
+                    next_h,
+                    np.nanmin(y_new),
+                    np.nanmax(y_new),
+                    np.nanmax(error),
+                    np.nanmin(test_f),
+                    np.nanmax(test_f),
+                    np.count_nonzero(np.isinf(test_f)),
+                )
+            h = next_h
             output_step(t, test_f, self)
 
             while t_eval_index < len(t_evals) and t >= t_evals[t_eval_index]:
