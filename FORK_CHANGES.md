@@ -314,6 +314,57 @@ The W39 Monte Carlo campaign should be restarted only after a small matched
 seed replay confirms that the new local-error rejections occur as expected
 and that the solver still reaches the intended physical solution.
 
+## 6. Time-dependent Rosenbrock timestep growth
+
+**Commit:** `Add time-dependent Rosenbrock timestep growth` (development
+change on `codex/rosenbrock-step-recovery`).
+
+### Motivation
+
+The restored VULCAN-compatible factor-of-two growth limit is deliberately
+conservative. In the W39 baseline grid it made the patched integrations
+scientifically well controlled but too slow for a practical Monte Carlo
+campaign. Starting from a timestep near `1e-16` seconds requires roughly 70
+accepted doublings merely to reach day-scale timesteps.
+
+PACT uses a different strategy: it requests output intervals that grow by a
+factor of ten before one day and more gradually afterwards, while DLSODES
+retains responsibility for rejecting inaccurate internal steps. FRECKLL now
+supports an analogous, optional two-regime growth limit while preserving its
+Rosenbrock acceptance test.
+
+### Change
+
+Two optional solver arguments were added:
+
+- `timestep_early_max_factor`, the maximum accepted-step growth before a
+  switch; and
+- `timestep_factor_switch_time`, the simulation time of that switch.
+
+After the switch, the existing `timestep_max_factor` applies. Omitting both
+new arguments preserves the historical constant growth limit. FETUKINES
+experiments use an early maximum of 100, a switch at 86400 seconds, and a late
+maximum of 10.
+
+A candidate is still accepted only when `delta <= rtol`. If an aggressive
+proposal fails that test, the retry now uses at most
+`timestep_reject_factor * h` (0.1 by default), rather than spending several
+evaluations recovering through repeated halvings. The accepted state and
+simulation time remain unchanged during every retry.
+
+### Tests and interpretation
+
+`tests/test_rosenbrock.py` verifies that the early and late limits are selected
+on the correct sides of the switch and that a local-error rejection retries at
+the same simulation time with the stronger reduction.
+
+The time-dependent factors change only how rapidly the solver searches for an
+efficient timestep. They do not relax `rtol`, `atol`, `df_criteria`, or
+`dfdt_criteria`, and they do not permit a candidate with excessive embedded
+error to enter the accepted trajectory. Nevertheless, this is a numerical
+controller change, so its profiles and convergence status must be compared
+against the conservative patched baselines before production use.
+
 ## Reproducibility policy for future changes
 
 Future modifications should be added here with:

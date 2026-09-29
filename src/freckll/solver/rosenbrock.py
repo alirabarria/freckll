@@ -144,6 +144,8 @@ class Rosenbrock(Solver):
         timestep_reject_factor: float = 0.1,
         timestep_min_factor: float = 0.5,
         timestep_max_factor: float = 2.0,
+        timestep_early_max_factor: Optional[float] = None,
+        timestep_factor_switch_time: Optional[float] = None,
         zero_delta_fraction: float = 0.01,
         minimum_step: float = 1e-16,
         tiny: float = 1e-50,
@@ -173,6 +175,13 @@ class Rosenbrock(Solver):
                 timestep controller.
             timestep_max_factor: Maximum factor applied by the local-error
                 timestep controller.
+            timestep_early_max_factor: Optional maximum growth factor used
+                before ``timestep_factor_switch_time``. After the switch,
+                ``timestep_max_factor`` is used. If omitted, the same maximum
+                applies throughout the integration.
+            timestep_factor_switch_time: Simulation time at which the maximum
+                growth factor changes from ``timestep_early_max_factor`` to
+                ``timestep_max_factor``.
             zero_delta_fraction: Fraction of ``rtol`` substituted for an
                 exactly zero error estimate when computing the next step.
             minimum_step: The minimum step size.
@@ -217,6 +226,21 @@ class Rosenbrock(Solver):
             max_solve_time = max_solve_time.to(u.s).value
 
         start_time = time.time()
+
+        if (timestep_early_max_factor is None) != (timestep_factor_switch_time is None):
+            raise ValueError(
+                "timestep_early_max_factor and timestep_factor_switch_time "
+                "must be provided together"
+            )
+        if timestep_early_max_factor is not None:
+            if timestep_early_max_factor < timestep_min_factor:
+                raise ValueError(
+                    "timestep_early_max_factor must be at least timestep_min_factor"
+                )
+            if timestep_factor_switch_time < t0:
+                raise ValueError(
+                    "timestep_factor_switch_time cannot precede the integration start"
+                )
 
         start_t = math.log10(max(t0, 1e-6))
         end_t = math.log10(t1)
@@ -379,12 +403,19 @@ class Rosenbrock(Solver):
             error[y_new < 0] = 0
             delta = np.amax(error[y_new > 0])
 
+            active_max_factor = timestep_max_factor
+            if (
+                timestep_factor_switch_time is not None
+                and t < timestep_factor_switch_time
+            ):
+                active_max_factor = timestep_early_max_factor
+
             next_h = update_timestep(
                 h,
                 rtol,
                 delta,
                 min_factor=timestep_min_factor,
-                max_factor=timestep_max_factor,
+                max_factor=active_max_factor,
                 zero_error_fraction=zero_delta_fraction,
             )
 
@@ -392,6 +423,7 @@ class Rosenbrock(Solver):
             # criterion, not merely advice for the following step. Retain the
             # last accepted state and retry when the candidate exceeds rtol.
             if delta > rtol:
+                rejected_h = min(next_h, h * timestep_reject_factor)
                 if trace_attempts:
                     self.info(
                         "Rosenbrock rejected: reason=local_error "
@@ -403,12 +435,16 @@ class Rosenbrock(Solver):
                         h,
                         delta,
                         rtol,
-                        next_h,
+                        rejected_h,
                         np.nanmin(y_new),
                         np.nanmax(y_new),
                         np.nanmax(error),
                     )
-                h = next_h
+                # A rejected proposal should retreat decisively. The regular
+                # controller's lower growth bound is useful after accepted
+                # steps, but recovering only by repeated halvings wastes many
+                # evaluations after an intentionally aggressive proposal.
+                h = rejected_h
                 if h < minimum_step:
                     self.info("Minimum step size reached")
                     break

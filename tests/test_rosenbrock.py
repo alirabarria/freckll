@@ -146,7 +146,7 @@ def test_local_error_rejects_candidate_before_advancing(monkeypatch, caplog):
             jac=lambda t, y: np.eye(y.size),
             y0=np.array([1.0]),
             t0=0.0,
-            t1=0.05,
+            t1=0.01,
             num_species=1,
             transform=UnityTransform(),
             initial_step=0.1,
@@ -156,11 +156,55 @@ def test_local_error_rejects_candidate_before_advancing(monkeypatch, caplog):
         )
 
     assert result["success"] is True
-    assert attempted_steps == [0.1, 0.05]
+    assert attempted_steps == [0.1, 0.010000000000000002]
     assert attempted_times == [0.0, 0.0]
-    assert result["times"][-1] == 0.05
+    assert np.isclose(result["times"][-1], 0.01)
     assert any(
         "reason=local_error" in record.getMessage()
         and "delta=1.00000000000000002E-02" in record.getMessage()
         for record in caplog.records
     )
+
+
+def test_timestep_growth_limit_switches_at_requested_time(monkeypatch):
+    """The early growth limit should change without relaxing acceptance."""
+    observed_max_factors = []
+
+    def fake_step(f, jac, y, t, h):
+        return y.copy(), np.full_like(y, 1e-4)
+
+    def fake_update(timestep, rtol, error, min_factor, max_factor, zero_error_fraction):
+        observed_max_factors.append(max_factor)
+        return timestep
+
+    monkeypatch.setattr(
+        "freckll.solver.rosenbrock.step_second_order_rosenbrock",
+        fake_step,
+    )
+    monkeypatch.setattr(
+        "freckll.solver.rosenbrock.update_timestep",
+        fake_update,
+    )
+
+    solver = Rosenbrock.__new__(Rosenbrock)
+    solver._logger = logging.getLogger("freckll.test_rosenbrock")
+    result = solver._run_solver(
+        f=lambda t, y: np.zeros_like(y),
+        jac=lambda t, y: np.eye(y.size),
+        y0=np.array([1.0]),
+        t0=0.0,
+        t1=0.75,
+        num_species=1,
+        transform=UnityTransform(),
+        initial_step=0.25,
+        rtol=1e-3,
+        timestep_early_max_factor=100.0,
+        timestep_max_factor=10.0,
+        timestep_factor_switch_time=0.5,
+        df_criteria=-1.0,
+        dfdt_criteria=-1.0,
+        maxiter=3,
+    )
+
+    assert result["success"] is True
+    assert observed_max_factors == [100.0, 100.0, 10.0]
